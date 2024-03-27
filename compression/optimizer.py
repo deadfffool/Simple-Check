@@ -16,37 +16,20 @@
 
 import os
 import warnings
-
 from contextlib import contextmanager
-
 import torch
-
-from horovod.common.util import split_list
-
-from horovod.torch.compression import Compression
-from horovod.torch.functions import broadcast_object
-from horovod.torch.mpi_ops import allreduce_async_, grouped_allreduce_async_, sparse_allreduce_async, allgather_async, allgather
-from horovod.torch.mpi_ops import synchronize
-from horovod.torch.mpi_ops import size
-from horovod.torch.mpi_ops import Average, Adasum, Sum
-from horovod.torch.mpi_ops import rocm_built
-from horovod.torch.mpi_ops import ProcessSet, global_process_set
-
-
+from horovod.torch.mpi_ops import allreduce_async_, allgather_async, synchronize
+from horovod.torch.mpi_ops import size, Average, rocm_built, global_process_set
 from .utils import find_duplicates, get_comm, get_compressor, get_memory, get_config, check_not_compress, check_not_ef
 
-
 class _DistributedOptimizer(torch.optim.Optimizer):
-    def __init__(self, params, named_parameters, compression,
+    def __init__(self, params, named_parameters,
                  comm_params = None,
                  backward_passes_per_step=1, op=Average,
                  gradient_predivide_factor=1.0,
-                 num_groups=0,
-                 groups=None,
                  sparse_as_dense=False,
                  process_set=global_process_set):
         super(self.__class__, self).__init__(params)
-        self._compression = compression
 
         self.named_parameters=named_parameters
 
@@ -187,22 +170,20 @@ class _DistributedOptimizer(torch.optim.Optimizer):
                 outputs = synchronize(handle)
                 for gp, output, gctx in zip(p, outputs, ctx):
                     self._allreduce_delay[gp] = self.backward_passes_per_step
-                    gp.grad.set_(self._compression.decompress(output, gctx))
+                    gp.grad.set_(self.compressor.decompress(output, gctx))
             else:
                 name = self._parameter_names.get(p)
                 # When handle is a callable function, it returns the aggregated tensor result
                 if self.compressor:
                     # in communicator, p is not tuple, but handle is.
-
                     # output = self._communicator.receive_step(handle, ctx,name,p.grad)
                     output = self.receive_gradient(handle, ctx, name, p.grad)
-
                     self._allreduce_delay[p] = self.backward_passes_per_step
                     p.grad.set_(output)
                 else:
                     output = synchronize(handle) if not callable(handle) else handle()
                     self._allreduce_delay[p] = self.backward_passes_per_step
-                    p.grad.set_(self._compression.decompress(output, ctx))
+                    p.grad.set_(self.compressor.decompress(output, ctx))
 
         self._handles.clear()
 
@@ -249,7 +230,6 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         return super(self.__class__, self).zero_grad()
 
 
-    
     def send_gradient(self, p):
         if p.grad is None:
             p.grad = p.data.new(p.size()).zero_()
@@ -272,16 +252,12 @@ class _DistributedOptimizer(torch.optim.Optimizer):
 
         if self.comm_mode == 'allreduce':
             handles = self.allreduce_send(tensor_compressed, name)
-        elif self.comm_mode == 'allgather_fast':
-            handles = self.fast_allgather_send(tensor_compressed, name)
         elif self.comm_mode == 'allgather':
             handles = self.allgather_send(tensor_compressed, name)
         else:
             raise AssertionError("comm_mode is not legal.")
         
         return handles, ctx
-
-
    
     def allreduce_send(self, tensors_compressed, name):
 
@@ -289,10 +265,8 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         for i, tensor_compressed in enumerate(tensors_compressed):
             handles.append(allreduce_async_(tensor_compressed, average = True, name = name + str(i)))
         return handles
-
-
-   
-    def fast_allgather_send(self, tensors_compressed, name):
+  
+    def allgather_send(self, tensors_compressed, name):
         
         handles = []
         for tensor_compressed in tensors_compressed:
@@ -300,32 +274,6 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             handles.append(handle)
 
         return handles
-
-
-    # need to allgather the size when tensors_size_are_same = False
-    def allgather_send(self, tensors_compressed, name):
-
-        tensors_size = []
-        for t in tensors_compressed:
-            size_dim0 = t.size()[0] if len(t.size())>0 else t.numel()
-            tensors_size.append(size_dim0)
-
-        if self.send_size_aresame == True:
-            tensors_size_ag = [tensors_size] * size()  # list of tensor sizes per rank
-            tensor_sizes = zip(*tensors_size_ag)  # transpose
-        else:
-            tensors_size = torch.tensor(tensors_size)  # TODO: set device
-            gathered = allgather(tensors_size)  # tensor of tensor sizes per rank
-            tensor_sizes = gathered.view([self.world_size, -1]).t().tolist()  # transpose, to list
-
-        handles = []
-        for tensor_compressed in tensors_compressed:
-            handle = allgather_async(tensor_compressed)
-            handles.append(handle)
-
-        handles = handles, tensor_sizes
-        return handles
-
 
     def receive_gradient(self, handle, ctx, name, tensor):
 
@@ -334,13 +282,10 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             output = self.allreduce_receive(handle, ctx, name, tensor)
         elif self.comm_mode == 'allgather':
             output = self.allgather_receive(handle, ctx, name, tensor)
-        elif self.comm_mode == 'allgather_fast':
-            output = self.fast_allgather_receive(handle, ctx, name, tensor)
         else:
             raise AssertionError("comm_mode is not legal.")
         
         return output
-
 
     def allreduce_receive(self, handles, ctx, name, tensor):
         output = [synchronize(h) for h in handles]
@@ -350,37 +295,8 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             return output
         return self.compressor.decompress(output, ctx, name)
 
-
-    def allgather_receive(self, result, ctx, name, tensor):
-
-        handles, tensor_sizes = result
-        tensors_ag = []
-        gathered_list = []
-        # 2 times: val and idx
-        for handle, sizes in zip(handles, tensor_sizes):
-            gathered = synchronize(handle)
-            gathered_list.append(gathered)
-            tensors_ag.append(gathered.split(sizes))
-        
-        list_tensor_decompressed = []
-        # n times: n is the number of nodes
-
-        # deal with not compressed tensor
-        if ctx == None:
-            for tensor_compressed in zip(*tensors_ag):
-                tensor_decompressed, *others = tensor_compressed
-                list_tensor_decompressed.append(tensor_decompressed)
-        else:
-            for tensor_compressed in zip(*tensors_ag):
-                tensor_decompressed = self.compressor.decompress(tensor_compressed, ctx, name)
-                list_tensor_decompressed.append(tensor_decompressed)
-        tensors_aggregated = self.compressor.aggregate(list_tensor_decompressed)
-
-        return tensors_aggregated / self.world_size
-
-    
     # no need to split aggregated tensor 
-    def fast_allgather_receive(self, result, ctx, name, tensor):
+    def allgather_receive(self, result, ctx, name, tensor):
 
         handles = result
         tensors_ag = []
@@ -389,10 +305,6 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             gathered = synchronize(handle)
             tensors_ag.append(gathered)
         
-        list_tensor_decompressed = []
-        
-        # 1 times, use
-
         # deal with not compressed tensor
         if ctx == None:
             tensor_compressed = tensors_ag[0]
@@ -400,28 +312,12 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             tensor_decompressed = self.compressor.aggregate(tensor_compressed.split(sizes))
         else:
             tensor_compressed = tensors_ag[0], tensors_ag[1]
-            tensor_decompressed = self.compressor.decompress_add(tensor_compressed, ctx, name)
+            tensor_decompressed = self.compressor.decompress(tensor_compressed, ctx, name)
+            # tensor_decompressed = self.compressor.decompress(tensor_compressed, ctx, name)
   
         return tensor_decompressed / self.world_size
 
-
-        # if len(tensors_ag) > 1:
-        #     tensor_compressed = tensors_ag[0], tensors_ag[1]
-        #     tensor_decompressed = self.compressor.decompress_add(tensor_compressed, ctx, name)
-
-        #     return tensor_decompressed / self.world_size
-
-        # else:
-        #     tensor_compressed = tensors_ag[0]
-        #     sizes = [len(tensor_compressed) // self.world_size] * self.world_size
-        #     tensor_decompressed = self.compressor.aggregate(tensor_compressed.split(sizes))
-        #     return tensor_decompressed / self.world_size
-        
-
-
-
 def DistributedOptimizer(optimizer, named_parameters=None,
-                         compression=Compression.none,
                          comm_params=None,
                          backward_passes_per_step=1,
                          op=Average,
@@ -498,5 +394,5 @@ def DistributedOptimizer(optimizer, named_parameters=None,
     groups =None
     cls = type(optimizer.__class__.__name__, (optimizer.__class__,),
                 dict(_DistributedOptimizer.__dict__))
-    return cls(optimizer.param_groups, named_parameters, compression, comm_params, backward_passes_per_step, op,
+    return cls(optimizer.param_groups, named_parameters, comm_params, backward_passes_per_step, op,
                 gradient_predivide_factor, process_set)

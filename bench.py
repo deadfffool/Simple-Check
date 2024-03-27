@@ -213,8 +213,9 @@ def main():
     
     # Compression
     comm_params = {
-    'comm_mode':'allgather_fast',
+    'comm_mode':'allgather',
     'compressor':'topk',
+    'compress_ratio' : 0.01,
     'memory':'residual',
     'send_size_aresame':True,
     'model_named_parameters': model.named_parameters()

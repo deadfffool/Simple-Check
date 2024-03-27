@@ -1,30 +1,5 @@
 import torch
-
 from compression import Compressor
-import random
-
-def sparsify(tensor, compress_ratio):
-    tensor = tensor.flatten().cuda()
-    len = tensor.numel()
-    # compress_ratio=0.001
-    # compress_ratio=0.05
-    compress_ratio=0.01
-    
-    k = max(1, int(len * compress_ratio))
-    _, indices = torch.topk(tensor.abs(), k, sorted=False,)
-    values = torch.gather(tensor, 0, indices)
-    return values, indices
-
-def desparsify(tensors, numel):
-    values, indices = tensors
-    if values.numel()==numel:
-        return values
-
-    tensor_decompressed = torch.zeros(
-        numel, dtype=values.dtype, layout=values.layout, device=values.device).cuda()
-    tensor_decompressed.scatter_(0, indices, values)
-    return tensor_decompressed
-
 
 class TopKCompressor(Compressor):
 
@@ -35,31 +10,21 @@ class TopKCompressor(Compressor):
         self.rank = rank
 
     def compress(self, tensor, name):
-        tensors = sparsify(tensor, self.compress_ratio)
         ctx = tensor.numel(), tensor.size()
+        tensor = tensor.flatten().cuda()
+        len = tensor.numel()
+        k = max(1, int(len * self.compress_ratio))
+        _, indices = torch.topk(tensor.abs(), k, sorted=False,)
+        values = torch.gather(tensor, 0, indices)
+        tensors = values, indices
         return tensors, ctx
 
     def decompress(self, tensors, ctx, name):
-        if ctx==None:
-            tensor, = tensors
-            return tensor
-        numel, shape = ctx
-        
-        tensor_decompressed = desparsify(tensors, numel)
-        return tensor_decompressed.view(shape)
-
-    def decompress_add(self, tensors, ctx, name):
         numel, shape = ctx
         values, indices = tensors
         if values.numel()==numel:
             return values
-        tensor_decompressed = torch.zeros(
-            numel, dtype=values.dtype, layout=values.layout, device=values.device).cuda()
-        # 填充稀疏值
-        # if hvd.rank() == 0:
-        #     print('values: ', values, 'indices: ', indices)
-        # [a,b,    c,d]  [0,1,    0,2]
-        # [c, b ,d ][a+c, b,d ]
+        tensor_decompressed = torch.zeros(numel, dtype=values.dtype, layout=values.layout, device=values.device).cuda()
         tensor_decompressed = tensor_decompressed.scatter_add(0, indices, values)
         return tensor_decompressed.view(shape)
 

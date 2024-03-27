@@ -16,20 +16,20 @@ def get_comm(params):
 
 def get_compressor(params):
     compress_name = params.get('compressor', 'none')
-    
+    compress_ratio = params.get('compress_ratio', 0.01)
     if compress_name == 'none':
         from compression.compressor.none import NoneCompressor
         compressor = NoneCompressor()
-    
     elif compress_name == 'topk':
         from compression.compressor.topk import TopKCompressor
-        compress_ratio = params.get('compress_ratio', 0.001)
         compressor = TopKCompressor(compress_ratio,rank=hvd.rank())
+    elif compress_name == 'topk_save':
+        from compression.compressor.topk_save import TopKSaveCompressor
+        compressor = TopKSaveCompressor(compress_ratio,rank=hvd.rank())
     else:
         raise NotImplementedError(compressor)
 
     return compressor
-
 
 def get_memory(params):
     memory_name = params.get('memory', 'none')
@@ -40,13 +40,10 @@ def get_memory(params):
 
     elif memory_name == 'residual':
         from compression.memory.residual import ResidualMemory
-        memory = ResidualMemory()
-    
+        memory = ResidualMemory()  
     else:
         raise NotImplementedError(memory)
-
     return memory
-
 
 def get_config(params):
     send_size_aresame = params.get('send_size_aresame', True)
@@ -81,5 +78,4 @@ def check_not_ef(params, name, tensor):
     
     if 'classifier.6' in name:
         return True
-
     return False 
