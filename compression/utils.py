@@ -18,11 +18,11 @@ def get_compressor(params):
     compress_name = params.get('compressor', 'none')
     
     if compress_name == 'none':
-        from ADTopklib.compressor.none import NoneCompressor
+        from compression.compressor.none import NoneCompressor
         compressor = NoneCompressor()
     
     elif compress_name == 'topk':
-        from ADTopklib.compressor.topk import TopKCompressor
+        from compression.compressor.topk import TopKCompressor
         compress_ratio = params.get('compress_ratio', 0.001)
         compressor = TopKCompressor(compress_ratio,rank=hvd.rank())
     else:
@@ -35,11 +35,11 @@ def get_memory(params):
     memory_name = params.get('memory', 'none')
 
     if memory_name == 'none':
-        from ADTopklib.memory.none import NoneMemory
+        from compression.memory.none import NoneMemory
         memory = NoneMemory()
 
     elif memory_name == 'residual':
-        from ADTopklib.memory.residual import ResidualMemory
+        from compression.memory.residual import ResidualMemory
         memory = ResidualMemory()
     
     else:

@@ -27,7 +27,7 @@ except RuntimeError:
     pass
 
 # compression
-import ADTopklib
+import compression
 
 glo.init()
 
@@ -221,7 +221,7 @@ def main():
     }
     
     # Horovod: wrap optimizer with DistributedOptimizer.
-    optimizer = ADTopklib.DistributedOptimizer(optimizer, comm_params=comm_params, named_parameters=model.named_parameters())
+    optimizer = compression.DistributedOptimizer(optimizer, comm_params=comm_params, named_parameters=model.named_parameters())
     
     # optionally resume from a checkpoint at rank 0, then broadcast weights to other workers
     if args.resume and hvd.rank() == 0:

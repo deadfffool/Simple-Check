@@ -1,4 +1,4 @@
-from ADTopklib import Compressor
+from compression import Compressor
 
 
 class NoneCompressor(Compressor):

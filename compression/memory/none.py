@@ -1,4 +1,4 @@
-from ADTopklib import Memory
+from compression import Memory
 
 
 class NoneMemory(Memory):
