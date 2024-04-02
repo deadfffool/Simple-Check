@@ -27,4 +27,3 @@ class TopKCompressor(Compressor):
         tensor_decompressed = torch.zeros(numel, dtype=values.dtype, layout=values.layout, device=values.device).cuda()
         tensor_decompressed = tensor_decompressed.scatter_add(0, indices, values)
         return tensor_decompressed.view(shape)
-

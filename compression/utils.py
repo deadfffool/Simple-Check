@@ -23,9 +23,6 @@ def get_compressor(params):
     elif compress_name == 'topk':
         from compression.compressor.topk import TopKCompressor
         compressor = TopKCompressor(compress_ratio,rank=hvd.rank())
-    elif compress_name == 'topk_save':
-        from compression.compressor.topk_save import TopKSaveCompressor
-        compressor = TopKSaveCompressor(compress_ratio,rank=hvd.rank())
     else:
         raise NotImplementedError(compressor)
 
@@ -49,6 +46,9 @@ def get_config(params):
     send_size_aresame = params.get('send_size_aresame', True)
     return send_size_aresame
 
+def get_check(params):
+    check = params.get('checkpoint', False)
+    return check
 
 # Special case:
 # All dim==1 tensor should not be compressed

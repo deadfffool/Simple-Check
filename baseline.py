@@ -218,7 +218,8 @@ def main():
     'compress_ratio' : 0.01,
     'memory':'residual',
     'send_size_aresame':True,
-    'model_named_parameters': model.named_parameters()
+    'model_named_parameters': model.named_parameters(),
+    'checkpoint': False
     }
     
     # Horovod: wrap optimizer with DistributedOptimizer.
@@ -273,7 +274,7 @@ def main():
                 'state_dict': model.state_dict(),
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best)
+            }, is_best, filename='./baseline/checkpoint_{}.pth.tar'.format(epoch))
             if epoch == args.epochs - 1:
                 print('##Top-1 {0}\n'
                     '##Perf  {1}'.format(acc1, hvd.size() * args.allreduce_batch_size / train_ep.avg))
@@ -284,7 +285,7 @@ def main():
     
     dur_full = time.time() - start_full
     if hvd.rank() == 0:
-        with open("time.txt", 'w') as f:
+        with open("time_baseline.txt", 'w') as f:
             for k, t in time_stat.items():
                 print("Time stat {} : {}s".format(k, t))
                 f.write(str(t))
@@ -369,7 +370,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 loss.backward()
                 # s3 = time.time()
                 # print('backward time {}, {}'.format(s3 - s2, s3 - end))
-                optimizer.step()
+                optimizer.step(i)
 
                 # measure elapsed time
                 batch_time.update(time.time() - end)
@@ -428,10 +429,10 @@ def validate(val_loader, model, args):
     return top1.avg
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='./baseline/checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filename, './baseline/model_best.pth.tar')
 
 
 class AverageMeter(object):
