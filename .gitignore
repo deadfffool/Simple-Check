@@ -3,3 +3,5 @@ __pycache__/
 baseline/
 baseline2/
 diff/
+test/
+*.txt

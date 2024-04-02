@@ -311,11 +311,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
     end = time.time()
     
-    def trace_handler(prof):
-        print(prof.key_averages().table(
-        sort_by="self_cuda_time_total", row_limit=-1))
-        prof.export_chrome_trace("pytorch-trace/pytorch-trace" + str(prof.step_num) + ".json")
-    
     if True:
     # event1 = torch.cuda.Event()
         all_iterations = train_loader_len

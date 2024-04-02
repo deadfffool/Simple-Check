@@ -85,7 +85,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         self.memory = get_memory(self._comm_params)
         self.send_size_aresame = get_config(self._comm_params)
         self.check = get_check(self._comm_params)
-        
+        self.differential_dict = {}
 
         if self.process_set.included() and (size() > 1 or os.environ.get('HOROVOD_ELASTIC') == '1'):
             self._register_hooks()
@@ -316,8 +316,14 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             tensor_compressed = tensors_ag[0], tensors_ag[1]
             tensor_decompressed = self.compressor.decompress(tensor_compressed, ctx, name)
             if self.check:
-                torch.save({'name':name, 'ctx':ctx, 'tensors':tensor_compressed}, './diff/{}_{}.pth.tar'.format(i,name))
+                # torch.save({'name':name, 'ctx':ctx, 'tensors':tensor_compressed}, './diff/{}_{}.pth.tar'.format(i,name))
+                self.differential_dict[name] = {'ctx':ctx, 'tensors':tensor_compressed}
         return tensor_decompressed / self.world_size
+    
+    def differential_save(self, filename):
+        torch.save(self.differential_dict, filename)
+        self.differential_dict = {}
+        
 
 def DistributedOptimizer(optimizer, named_parameters=None,
                          comm_params=None,

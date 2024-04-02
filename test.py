@@ -267,14 +267,14 @@ def main():
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
-        if hvd.rank() == 0 & epoch == 1:
+        if hvd.rank() == 0:
             save_checkpoint({
                 'epoch': epoch + 1,
                 'net': args.model_net,
                 'state_dict': model.state_dict(),
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best, './diff/checkpoint_{}.pth.tar'.format(epoch))
+            }, is_best, './test/checkpoint_{}.pth.tar'.format(epoch))
             if epoch == args.epochs - 1:
                 print('##Top-1 {0}\n'
                     '##Perf  {1}'.format(acc1, hvd.size() * args.allreduce_batch_size / train_ep.avg))
@@ -285,7 +285,7 @@ def main():
     
     dur_full = time.time() - start_full
     if hvd.rank() == 0:
-        with open("time.txt", 'w') as f:
+        with open("test.txt", 'w') as f:
             for k, t in time_stat.items():
                 print("Time stat {} : {}s".format(k, t))
                 f.write(str(t))
@@ -366,7 +366,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 # s3 = time.time()
                 # print('backward time {}, {}'.format(s3 - s2, s3 - end))
                 optimizer.step(i)
-
+                if hvd.rank() == 0:
+                    optimizer.differential_save('./test/checkpoint_{}-{}.pth.tar'.format(epoch,i))
                 # measure elapsed time
                 batch_time.update(time.time() - end)
                 # if i % args.print_freq == 0:
@@ -424,10 +425,10 @@ def validate(val_loader, model, args):
     return top1.avg
 
 
-def save_checkpoint(state, is_best, filename='./diff/base.pth.tar'):
+def save_checkpoint(state, is_best, filename='./test/base.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, './diff/model_best.pth.tar')
+        shutil.copyfile(filename, './test/model_best.pth.tar')
 
 
 class AverageMeter(object):
