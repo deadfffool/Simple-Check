@@ -65,7 +65,7 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
+                    help='choose which ckpt to restore')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--noeval', action='store_true', help = 'not run evaluation phase')
@@ -207,10 +207,6 @@ def main():
                             momentum=args.momentum,
                             weight_decay=args.weight_decay)
     
-    # Horovod: broadcast parameters & optimizer state.
-    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
-    hvd.broadcast_optimizer_state(optimizer, root_rank=0)
-    
     # Compression
     comm_params = {
     'comm_mode':'allgather',
@@ -222,25 +218,24 @@ def main():
     'checkpoint': True
     }
     
-    # Horovod: wrap optimizer with DistributedOptimizer.
-    optimizer = compression.DistributedOptimizer(optimizer, comm_params=comm_params, named_parameters=model.named_parameters())
-    
     # optionally resume from a checkpoint at rank 0, then broadcast weights to other workers
     if args.resume and hvd.rank() == 0:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            # Horovod: broadcast start_epoch from rank 0 to other ranks
-            args.start_epoch = hvd.broadcast(torch.tensor(args.start_epoch), root_rank=0,
-                                             name='start_epoch').item()
-            best_acc1 = checkpoint['best_acc1']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+        train_loader_len = int(len(train_loader))
+        model, optimizer = load_base_checkpoint(model,optimizer)
+        from compression.compressor.topk import TopKCompressor
+        topk = TopKCompressor(comm_params['compress_ratio'], 0)
+        model, optimizer = load_differential_checkpoint(model,optimizer,train_loader_len,topk)
+        print("loaded differential checkpoint!")
+        
+    # Horovod: broadcast parameters & optimizer state.
+    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+    hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+    # Horovod: broadcast start_epoch from rank 0 to other ranks
+    args.start_epoch = hvd.broadcast(torch.tensor(args.start_epoch), root_rank=0)
+    
+    optimizer = compression.DistributedOptimizer(optimizer, comm_params=comm_params, named_parameters=model.named_parameters())
+    
+    # Horovod: wrap optimizer with DistributedOptimizer.
     
     dur_setup = time.time() - start
     time_stat["setup_time"] = dur_setup
@@ -266,8 +261,9 @@ def main():
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
-
-        if hvd.rank() == 0 & epoch == 1:
+        
+        # save checkpoint
+        if hvd.rank() == 0 :
             save_checkpoint({
                 'epoch': epoch + 1,
                 'net': args.model_net,
@@ -365,8 +361,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 loss.backward()
                 # s3 = time.time()
                 # print('backward time {}, {}'.format(s3 - s2, s3 - end))
-                optimizer.step(i)
-
+                optimizer.step()
+                if hvd.rank() == 0:
+                    optimizer.save_differential_checkpoint('./diff/checkpoint_{}-{}.pth.tar'.format(epoch,i))
                 # measure elapsed time
                 batch_time.update(time.time() - end)
                 # if i % args.print_freq == 0:
@@ -429,6 +426,45 @@ def save_checkpoint(state, is_best, filename='./diff/base.pth.tar'):
     if is_best:
         shutil.copyfile(filename, './diff/model_best.pth.tar')
 
+
+def load_base_checkpoint(model, optimizer):
+    filedir = './diff/'
+    filepath = filedir + 'checkpoint_' + args.resume + '.pth.tar'
+    if os.path.isfile(filepath):
+        print("=> loading {}".format(filepath))
+        checkpoint = torch.load(filepath)
+        args.start_epoch = checkpoint['epoch']
+        print("=> loading model")
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        print("=> loaded base checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+        return model, optimizer
+    else:
+        raise ValueError("No checkpoint found")
+        return None, None
+
+def load_differential_checkpoint(model, optimizer, interations, topk):
+    filedir = './diff/'
+    named_parameters = list(model.named_parameters())
+    _parameter_names = {v: k for k, v in sorted(named_parameters)}
+    
+    # skip synchronize
+    # with optimizer.skip_synchronize():
+    for i in range(0,interations):
+        filepath = filedir + 'checkpoint_' + args.resume + '-'+ str(i) + '.pth.tar'
+        tensor_compressed = torch.load(filepath)
+        for key in tensor_compressed.keys():  # the name for trainable params
+            tensor = topk.decompress(tensor_compressed[key]['tensors'], tensor_compressed[key]['ctx'], None)
+            for param_group in optimizer.param_groups:
+                for p in param_group['params']:
+                    name = _parameter_names.get(p)
+                    if(name == key):
+                        p.grad = tensor
+                        # print("=> loaded {}".format(key))
+                        break
+        optimizer.step()
+        print("=> loaded interation {}".format(i))
+    return model, optimizer
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

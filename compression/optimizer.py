@@ -144,7 +144,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             self._handles[p] = (handle, ctx)
         return hook
 
-    def synchronize(self, i):
+    def synchronize(self):
         if not self.process_set.included():
             self._synchronized = True
             return
@@ -179,7 +179,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
                 if self.compressor:
                     # in communicator, p is not tuple, but handle is.
                     # output = self._communicator.receive_step(handle, ctx,name,p.grad)
-                    output = self.receive_gradient(handle, ctx, name, p.grad, i)
+                    output = self.receive_gradient(handle, ctx, name, p.grad)
                     self._allreduce_delay[p] = self.backward_passes_per_step
                     p.grad.set_(output)
                 else:
@@ -211,7 +211,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         finally:
             self._should_synchronize = True
 
-    def step(self, i, closure=None):
+    def step(self, closure=None):
         if self._should_synchronize:
             if self._synchronized:
                 warnings.warn("optimizer.step() called without "
@@ -220,7 +220,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
                               "slowdown. You may want to consider using "
                               "optimizer.skip_synchronize() context if you use "
                               "optimizer.synchronize() in your code.")
-            self.synchronize(i)
+            self.synchronize()
         self._synchronized = False
         return super(self.__class__, self).step(closure)
 
@@ -277,19 +277,19 @@ class _DistributedOptimizer(torch.optim.Optimizer):
 
         return handles
 
-    def receive_gradient(self, handle, ctx, name, tensor, i):
+    def receive_gradient(self, handle, ctx, name, tensor):
 
         output = None
         if self.comm_mode == 'allreduce':
-            output = self.allreduce_receive(handle, ctx, name, tensor, i)
+            output = self.allreduce_receive(handle, ctx, name, tensor)
         elif self.comm_mode == 'allgather':
-            output = self.allgather_receive(handle, ctx, name, tensor, i)
+            output = self.allgather_receive(handle, ctx, name, tensor)
         else:
             raise AssertionError("comm_mode is not legal.")
         
         return output
 
-    def allreduce_receive(self, handles, ctx, name, tensor, i):
+    def allreduce_receive(self, handles, ctx, name, tensor):
         output = [synchronize(h) for h in handles]
         # ctx is None only if tensor is not compressed
         if ctx == None:
@@ -298,7 +298,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         return self.compressor.decompress(output, ctx, name)
 
     # no need to split aggregated tensor 
-    def allgather_receive(self, result, ctx, name, tensor, i):
+    def allgather_receive(self, result, ctx, name, tensor):
 
         handles = result
         tensors_ag = []
@@ -316,14 +316,12 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             tensor_compressed = tensors_ag[0], tensors_ag[1]
             tensor_decompressed = self.compressor.decompress(tensor_compressed, ctx, name)
             if self.check:
-                # torch.save({'name':name, 'ctx':ctx, 'tensors':tensor_compressed}, './diff/{}_{}.pth.tar'.format(i,name))
                 self.differential_dict[name] = {'ctx':ctx, 'tensors':tensor_compressed}
         return tensor_decompressed / self.world_size
     
-    def differential_save(self, filename):
+    def save_differential_checkpoint(self, filename):
         torch.save(self.differential_dict, filename)
         self.differential_dict = {}
-        
 
 def DistributedOptimizer(optimizer, named_parameters=None,
                          comm_params=None,
